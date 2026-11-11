@@ -268,8 +268,16 @@ struct SettingsView: View {
                 ProgressView(value: Double(indexStatus.indexed), total: Double(indexStatus.total))
                     .padding(.leading, 56)
                     .padding(.trailing, 16)
-                    .padding(.bottom, 12)
+                    .padding(.bottom, indexStatus.pause == nil ? 12 : 4)
                     .accessibilityHidden(true)
+                if indexStatus.isRunning, let pause = indexStatus.pause {
+                    Text(pause.message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 56)
+                        .padding(.bottom, 12)
+                }
             }
             RowDivider()
             SettingsRow(icon: "text.magnifyingglass", title: "Search by description") {

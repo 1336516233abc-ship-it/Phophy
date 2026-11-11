@@ -8,7 +8,14 @@ final class IndexStatus {
     private(set) var indexed = 0
     private(set) var total = 0
     private(set) var isRunning = false
+    /// Set while indexing waits for the iPhone to cool down or leave Low
+    /// Power Mode (not while it waits for scrolling to stop).
+    private(set) var pause: IndexThrottle.Pause?
     let semanticSearchAvailable = CLIPEncoder.isAvailable
+
+    func setPause(_ pause: IndexThrottle.Pause?) {
+        if self.pause != pause { self.pause = pause }
+    }
 
     func update(indexed: Int, total: Int, isRunning: Bool) {
         self.indexed = indexed
@@ -88,10 +95,13 @@ actor PhotoIndexer {
             if !done.contains(asset.localIdentifier) { pending.append(asset) }
         }
 
-        // Images are fetched a few at a time, so waiting on iCloud for one
-        // photo doesn't hold up the others.
-        let batchSize = 4
+        // Images are fetched two at a time, so waiting on iCloud for one
+        // photo doesn't hold up the other, without holding many large
+        // images in memory. Before each step, indexing waits until the
+        // screen is still, so it never slows scrolling or the viewer.
+        let batchSize = 2
         for start in stride(from: 0, to: pending.count, by: batchSize) {
+            await waitForTurn(status: status)
             let batch = Array(pending[start..<min(start + batchSize, pending.count)])
             let images = await withTaskGroup(of: (Int, CGImage?).self) { group in
                 for (offset, asset) in batch.enumerated() {
@@ -103,6 +113,7 @@ actor PhotoIndexer {
             }
             for (asset, image) in zip(batch, images) {
                 guard let image else { continue }
+                await waitForTurn(status: status)
                 let text = await recognizeText(in: image)
                 let labels = await classify(image)
                 let embedding = try? await CLIPEncoder.shared.embed(image: image)
@@ -120,6 +131,18 @@ actor PhotoIndexer {
         }
         await status.update(indexed: indexed, total: total, isRunning: false)
         await PlaceResolver.shared.run()
+    }
+
+    /// Returns once the screen has been still for a moment and the iPhone
+    /// is neither hot nor in Low Power Mode.
+    private func waitForTurn(status: IndexStatus) async {
+        let throttle = IndexThrottle.shared
+        while !Task.isCancelled {
+            let pause = throttle.pause
+            await status.setPause(pause)
+            if pause == nil, !throttle.screenIsBusy { return }
+            try? await Task.sleep(for: pause == nil ? .milliseconds(250) : .seconds(10))
+        }
     }
 
     private func recognizeText(in image: CGImage) async -> String {

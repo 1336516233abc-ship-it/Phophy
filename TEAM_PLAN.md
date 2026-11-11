@@ -105,6 +105,7 @@ note on how it was reproduced. The lead re-ranks this list every week.
 | 13 | The assistant's chat history file grows without limit | Agent | B |
 | 14 | Accessibility: VoiceOver labels for tiles, the viewer bar and the ask bar; Dynamic Type in Settings and Study | All | C |
 | 15 | Index database migrations have no test; a failed migration would leave the app with no index | Index | A |
+| 16 | Swiping down to close a photo often fails the first time. Closing is the system zoom transition's drag, and three scroll views compete with it for the same touch: (a) the sideways pager starts its own drag on any movement, so a downward swipe that starts slightly sideways goes to the pager; (b) the photo's zoom view can scroll up and down by a fraction of a point when a tall photo or screenshot fills the screen's height (rounding), so it takes the drag; (c) a touch while the pager is still settling after a swipe only stops the pager. Fix: the pager starts only on mostly-sideways drags, the zoom view only when zoomed in, and the fitted size is rounded down | Viewer | C |
 
 ---
 

@@ -247,6 +247,11 @@ final class ReusableCollectionView: UICollectionView {
     private var scrolledToEnd = false
     private var laidOutSize: CGSize = .zero
 
+    // Indexing waits while any list or grid is moving.
+    override var contentOffset: CGPoint {
+        didSet { if contentOffset != oldValue { IndexThrottle.shared.noteActivity() } }
+    }
+
     override func layoutSubviews() {
         if bounds.size != laidOutSize, bounds.width > 0 {
             laidOutSize = bounds.size

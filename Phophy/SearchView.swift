@@ -124,6 +124,9 @@ struct IndexProgressLine: View {
                 ProgressView(value: Double(status.indexed), total: Double(max(status.total, 1))) {
                     Text("Indexing \(status.indexed) of \(status.total) photos")
                 }
+                if let pause = status.pause {
+                    Text(pause.message)
+                }
             } else if status.total > 0 {
                 Text("\(status.indexed) of \(status.total) photos indexed on this device")
             }

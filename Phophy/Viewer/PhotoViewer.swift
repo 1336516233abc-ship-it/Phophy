@@ -37,7 +37,11 @@ final class PhotoViewerModel {
         let start: Int
     }
 
-    var presentation: Presentation?
+    var presentation: Presentation? {
+        // Indexing stops while a photo is open, so it can't make the
+        // viewer stutter.
+        didSet { IndexThrottle.shared.setViewerOpen(presentation != nil) }
+    }
     /// The photo on screen. Closing zooms back to this photo's thumbnail.
     var currentID = ""
 
@@ -175,6 +179,9 @@ struct PhotoViewer: View {
     @State private var liveEnabled = true
     @State private var preheated: [PHAsset] = []
     private static let pageGap: CGFloat = 20
+    /// Every control in the top and bottom bars is this tall, so the round
+    /// buttons and the capsules line up.
+    static let barHeight: CGFloat = 56
 
     init(presentation: PhotoViewerModel.Presentation) {
         self.presentation = presentation
@@ -300,11 +307,12 @@ struct PhotoViewer: View {
                         viewer.close()
                     } label: {
                         Image(systemName: "chevron.left")
-                            .font(.body.weight(.semibold))
-                            .frame(width: 44, height: 44)
+                            .font(.title3.weight(.semibold))
+                            .frame(width: Self.barHeight, height: Self.barHeight)
+                            .contentShape(.circle)
                     }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: .circle)
                     .accessibilityLabel("Close")
                     Spacer()
                 }
@@ -318,10 +326,10 @@ struct PhotoViewer: View {
                             .foregroundStyle(.secondary)
                     }
                     .lineLimit(1)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 22)
+                    .frame(height: Self.barHeight)
                     .glassEffect(.regular, in: .capsule)
-                    .padding(.horizontal, 64)
+                    .padding(.horizontal, Self.barHeight + 12)
                 }
             }
 
@@ -358,7 +366,11 @@ struct PhotoViewer: View {
 
     private var bottomBar: some View {
         HStack {
-            Color.clear.frame(width: 52, height: 52)
+            if let current {
+                ShareButton(asset: current)
+            } else {
+                Color.clear.frame(width: Self.barHeight, height: Self.barHeight)
+            }
             Spacer()
             if let current {
                 GlassEffectContainer(spacing: 0) {
@@ -368,7 +380,7 @@ struct PhotoViewer: View {
                         } label: {
                             Image(systemName: current.isFavorite ? "heart.fill" : "heart")
                                 .font(.title3)
-                                .frame(width: 52, height: 44)
+                                .frame(width: 52, height: Self.barHeight)
                         }
                         .accessibilityLabel(current.isFavorite ? "Remove from favorites" : "Add to favorites")
 
@@ -377,7 +389,7 @@ struct PhotoViewer: View {
                         } label: {
                             Image(systemName: "info.circle")
                                 .font(.title3)
-                                .frame(width: 52, height: 44)
+                                .frame(width: 52, height: Self.barHeight)
                         }
                         .accessibilityLabel("What Phophy found in this photo")
 
@@ -387,14 +399,13 @@ struct PhotoViewer: View {
                             } label: {
                                 Image(systemName: "slider.horizontal.3")
                                     .font(.title3)
-                                    .frame(width: 52, height: 44)
+                                    .frame(width: 52, height: Self.barHeight)
                             }
                             .accessibilityLabel("Edit")
                         }
                     }
                     .buttonStyle(.plain)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
                     .glassEffect(.regular.interactive(), in: .capsule)
                 }
             }
@@ -410,10 +421,11 @@ struct PhotoViewer: View {
                 } label: {
                     Image(systemName: "trash")
                         .font(.title3)
-                        .frame(width: 52, height: 52)
+                        .frame(width: Self.barHeight, height: Self.barHeight)
+                        .contentShape(.circle)
                 }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .circle)
                 .accessibilityLabel("Delete")
             }
         }
@@ -515,7 +527,31 @@ private struct PhotoPager: UIViewRepresentable {
 
 final class PagerCollectionView: UICollectionView {
     var page = 0
+
+    override var contentOffset: CGPoint {
+        didSet { if contentOffset != oldValue { IndexThrottle.shared.noteActivity() } }
+    }
     private var laidOutSize: CGSize = .zero
+
+    /// Only a mostly sideways drag pages. A downward one is left to the
+    /// swipe-down-to-close gesture, even if it starts a little sideways;
+    /// otherwise the pager takes it and the photo doesn't close.
+    override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+        if recognizer === panGestureRecognizer, bounds.width > 0 {
+            let velocity = panGestureRecognizer.velocity(in: self)
+            if abs(velocity.y) > abs(velocity.x) {
+                // Still settling after a swipe: finish on the nearest photo
+                // and let this drag close it, rather than spend the drag
+                // stopping the pager.
+                let nearest = (contentOffset.x / bounds.width).rounded() * bounds.width
+                if abs(contentOffset.x - nearest) > 0.5 {
+                    setContentOffset(CGPoint(x: nearest, y: 0), animated: true)
+                }
+                return false
+            }
+        }
+        return super.gestureRecognizerShouldBegin(recognizer)
+    }
 
     override func layoutSubviews() {
         if bounds.size != laidOutSize, bounds.width > 0 {
@@ -874,6 +910,10 @@ final class ZoomScrollView: UIScrollView, UIScrollViewDelegate {
     var onSingleTap: (() -> Void)?
     var onZoomIn: (() -> Void)?
 
+    override var contentOffset: CGPoint {
+        didSet { if contentOffset != oldValue { IndexThrottle.shared.noteActivity() } }
+    }
+
     private let content = UIView()
     private let imageView = UIImageView()
     private let livePhotoView = PHLivePhotoView()
@@ -965,7 +1005,10 @@ final class ZoomScrollView: UIScrollView, UIScrollViewDelegate {
         if bounds.size != fittedForSize, zoomScale <= minimumZoomScale + 0.001,
            let size = contentAspectSize, bounds.width > 0 {
             let scale = min(bounds.width / size.width, bounds.height / size.height)
-            let fitted = CGSize(width: size.width * scale, height: size.height * scale)
+            // Rounded down: a fraction of a point too tall would let the
+            // photo scroll up and down and take the swipe-down-to-close drag.
+            let fitted = CGSize(width: (size.width * scale).rounded(.down),
+                                height: (size.height * scale).rounded(.down))
             content.frame = CGRect(origin: .zero, size: fitted)
             imageView.frame = content.bounds
             livePhotoView.frame = content.bounds
@@ -990,6 +1033,13 @@ final class ZoomScrollView: UIScrollView, UIScrollViewDelegate {
             askedForFullSize = true
             onZoomIn?()
         }
+    }
+
+    /// A photo that fits the screen has nothing to pan, so dragging it is
+    /// left to paging and to swipe-down-to-close.
+    override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+        if recognizer === panGestureRecognizer, zoomScale <= minimumZoomScale + 0.001 { return false }
+        return super.gestureRecognizerShouldBegin(recognizer)
     }
 
     @objc private func handleSingleTap() { onSingleTap?() }
@@ -1032,4 +1082,96 @@ struct PhotoInfoSheet: View {
         }
         .presentationDetents([.medium, .large])
     }
+}
+
+/// Shares the photo or video on screen, as Photos does: the original file
+/// (or the edited version, if it was edited), so it keeps its quality.
+private struct ShareButton: View {
+    let asset: PHAsset
+
+    @State private var isPreparing = false
+    @State private var shared: SharedFile?
+    @State private var failed = false
+
+    var body: some View {
+        Button {
+            Task { await prepare() }
+        } label: {
+            Group {
+                if isPreparing {
+                    ProgressView()
+                } else {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.title3)
+                }
+            }
+            .frame(width: PhotoViewer.barHeight, height: PhotoViewer.barHeight)
+            .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
+        .disabled(isPreparing)
+        .accessibilityLabel("Share")
+        .sheet(item: $shared, onDismiss: { shared.map { try? FileManager.default.removeItem(at: $0.url) } }) { file in
+            ActivityView(items: [file.url])
+                .presentationDetents([.medium, .large])
+                .ignoresSafeArea()
+        }
+        .alert("Couldn't share this item", isPresented: $failed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("It may still be downloading from iCloud. Try again in a moment.")
+        }
+    }
+
+    private struct SharedFile: Identifiable {
+        let url: URL
+        var id: URL { url }
+    }
+
+    private func prepare() async {
+        isPreparing = true
+        defer { isPreparing = false }
+        if let url = await Self.exportFile(for: asset) {
+            shared = SharedFile(url: url)
+        } else {
+            failed = true
+        }
+    }
+
+    /// Copies the asset's file to a temporary folder, downloading it from
+    /// iCloud if needed. An edited photo or video shares its edited version.
+    nonisolated private static func exportFile(for asset: PHAsset) async -> URL? {
+        let resources = PHAssetResource.assetResources(for: asset)
+        let preferred: [PHAssetResourceType] = asset.mediaType == .video
+            ? [.fullSizeVideo, .video]
+            : [.fullSizePhoto, .photo]
+        guard let resource = preferred.lazy.compactMap({ type in resources.first { $0.type == type } }).first
+        else { return nil }
+
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Share", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent(resource.originalFilename)
+
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        return await withCheckedContinuation { continuation in
+            PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: options) { error in
+                continuation.resume(returning: error == nil ? url : nil)
+            }
+        }
+    }
+}
+
+/// The system share sheet.
+private struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
